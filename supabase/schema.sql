@@ -122,6 +122,26 @@ create table if not exists orders (
   created_at timestamptz not null default now()
 );
 
+-- `is_admin()` centralizes the admin check used by the policies below.
+-- SECURITY DEFINER makes its inner `profiles` lookup run as the function
+-- owner, which bypasses RLS on that lookup — this is required, not just
+-- tidiness: a policy on `profiles` that re-queries `profiles` through a
+-- plain (non-bypassing) subquery causes Postgres to report "infinite
+-- recursion detected in policy for relation profiles", because evaluating
+-- the subquery re-triggers the same policy. Routing through this function
+-- breaks that cycle.
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from profiles where id = auth.uid() and role = 'admin'
+  );
+$$;
+
 -- Row Level Security.
 -- products/categories/offers: public read-only, plus full read/write for
 -- `admin`-role profiles (the admin dashboard writes straight to these tables
@@ -148,38 +168,20 @@ create policy "Public read access" on offers for select using (true);
 drop policy if exists "Admins manage categories" on categories;
 drop policy if exists "Admins manage products" on products;
 drop policy if exists "Admins manage offers" on offers;
-create policy "Admins manage categories" on categories for all using (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-) with check (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-);
-create policy "Admins manage products" on products for all using (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-) with check (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-);
-create policy "Admins manage offers" on offers for all using (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-) with check (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-);
+create policy "Admins manage categories" on categories for all using (is_admin()) with check (is_admin());
+create policy "Admins manage products" on products for all using (is_admin()) with check (is_admin());
+create policy "Admins manage offers" on offers for all using (is_admin()) with check (is_admin());
 
 drop policy if exists "Users read own profile" on profiles;
 drop policy if exists "Users update own profile" on profiles;
 drop policy if exists "Admins read all profiles" on profiles;
 create policy "Users read own profile" on profiles for select using (auth.uid() = id);
 create policy "Users update own profile" on profiles for update using (auth.uid() = id);
-create policy "Admins read all profiles" on profiles for select using (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-);
+create policy "Admins read all profiles" on profiles for select using (is_admin());
 
 drop policy if exists "Users read own orders" on orders;
 drop policy if exists "Admins read all orders" on orders;
 drop policy if exists "Admins update orders" on orders;
 create policy "Users read own orders" on orders for select using (auth.uid() = user_id);
-create policy "Admins read all orders" on orders for select using (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-);
-create policy "Admins update orders" on orders for update using (
-  exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
-);
+create policy "Admins read all orders" on orders for select using (is_admin());
+create policy "Admins update orders" on orders for update using (is_admin());
